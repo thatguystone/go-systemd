@@ -398,6 +398,8 @@ var ErrNoTestCursor = errors.New("Cursor parameter is not the same as current po
 type Journal struct {
 	cjournal *C.sd_journal
 	mu       sync.Mutex
+	d        unsafe.Pointer
+	l        C.size_t
 }
 
 // JournalEntry represents all fields of a journal entry plus address fields.
@@ -641,7 +643,7 @@ func (j *Journal) PreviousSkip(skip uint64) (uint64, error) {
 	return uint64(r), nil
 }
 
-func (j *Journal) getData(field string) (unsafe.Pointer, C.int, error) {
+func (j *Journal) getData(field string) (unsafe.Pointer, C.size_t, error) {
 	sd_journal_get_data, err := getFunction("sd_journal_get_data")
 	if err != nil {
 		return nil, 0, err
@@ -650,18 +652,15 @@ func (j *Journal) getData(field string) (unsafe.Pointer, C.int, error) {
 	f := C.CString(field)
 	defer C.free(unsafe.Pointer(f))
 
-	var d unsafe.Pointer
-	var l C.size_t
-
 	j.mu.Lock()
-	r := C.my_sd_journal_get_data(sd_journal_get_data, j.cjournal, f, &d, &l)
+	r := C.my_sd_journal_get_data(sd_journal_get_data, j.cjournal, f, &j.d, &j.l)
 	j.mu.Unlock()
 
 	if r < 0 {
 		return nil, 0, fmt.Errorf("failed to read message: %w", syscall.Errno(-r))
 	}
 
-	return d, C.int(l), nil
+	return j.d, j.l, nil
 }
 
 // GetData gets the data object associated with a specific field from the
@@ -673,7 +672,8 @@ func (j *Journal) GetData(field string) (string, error) {
 		return "", err
 	}
 
-	return C.GoStringN((*C.char)(d), l), nil
+	s := C.GoStringN((*C.char)(d), C.int(l))
+	return s, nil
 }
 
 // GetDataValue gets the data object associated with a specific field from the
@@ -699,7 +699,8 @@ func (j *Journal) GetDataBytes(field string) ([]byte, error) {
 		return nil, err
 	}
 
-	return C.GoBytes(d, l), nil
+	b := C.GoBytes(d, C.int(l))
+	return b, nil
 }
 
 // GetDataValueBytes gets the data object associated with a specific field from the
@@ -782,11 +783,9 @@ func (j *Journal) GetEntry() (*JournalEntry, error) {
 	entry.Cursor = C.GoString(c)
 
 	// Implements the JOURNAL_FOREACH_DATA_RETVAL macro from journal-internal.h
-	var d unsafe.Pointer
-	var l C.size_t
 	C.my_sd_journal_restart_data(sd_journal_restart_data, j.cjournal)
 	for {
-		r = C.my_sd_journal_enumerate_data(sd_journal_enumerate_data, j.cjournal, &d, &l)
+		r = C.my_sd_journal_enumerate_data(sd_journal_enumerate_data, j.cjournal, &j.d, &j.l)
 		if r == 0 {
 			break
 		}
@@ -795,7 +794,7 @@ func (j *Journal) GetEntry() (*JournalEntry, error) {
 			return nil, fmt.Errorf("failed to read message field: %w", syscall.Errno(-r))
 		}
 
-		msg := C.GoStringN((*C.char)(d), C.int(l))
+		msg := C.GoStringN((*C.char)(j.d), C.int(j.l))
 
 		k, v, ok := strings.Cut(msg, "=")
 		if !ok {
@@ -1089,11 +1088,9 @@ func (j *Journal) GetUniqueValues(field string) ([]string, error) {
 	}
 
 	// Implements the SD_JOURNAL_FOREACH_UNIQUE macro from sd-journal.h
-	var d unsafe.Pointer
-	var l C.size_t
 	C.my_sd_journal_restart_unique(sd_journal_restart_unique, j.cjournal)
 	for {
-		r = C.my_sd_journal_enumerate_unique(sd_journal_enumerate_unique, j.cjournal, &d, &l)
+		r = C.my_sd_journal_enumerate_unique(sd_journal_enumerate_unique, j.cjournal, &j.d, &j.l)
 		if r == 0 {
 			break
 		}
@@ -1102,7 +1099,7 @@ func (j *Journal) GetUniqueValues(field string) ([]string, error) {
 			return nil, fmt.Errorf("failed to read message field: %w", syscall.Errno(-r))
 		}
 
-		msg := C.GoStringN((*C.char)(d), C.int(l))
+		msg := C.GoStringN((*C.char)(j.d), C.int(j.l))
 		_, v, ok := strings.Cut(msg, "=")
 		if !ok {
 			return nil, errors.New("failed to parse field")
