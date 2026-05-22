@@ -686,7 +686,8 @@ func (j *Journal) GetDataValue(field string) (string, error) {
 		return "", err
 	}
 
-	return strings.SplitN(val, "=", 2)[1], nil
+	_, v, _ := strings.Cut(val, "=")
+	return v, nil
 }
 
 // GetDataBytes gets the data object associated with a specific field from the
@@ -711,7 +712,8 @@ func (j *Journal) GetDataValueBytes(field string) ([]byte, error) {
 		return nil, err
 	}
 
-	return bytes.SplitN(val, []byte("="), 2)[1], nil
+	_, v, _ := bytes.Cut(val, []byte("="))
+	return v, nil
 }
 
 // GetEntry returns a full representation of the journal entry referenced by the
@@ -794,12 +796,13 @@ func (j *Journal) GetEntry() (*JournalEntry, error) {
 		}
 
 		msg := C.GoStringN((*C.char)(d), C.int(l))
-		kv := strings.SplitN(msg, "=", 2)
-		if len(kv) < 2 {
+
+		k, v, ok := strings.Cut(msg, "=")
+		if !ok {
 			return nil, errors.New("failed to parse field")
 		}
 
-		entry.Fields[kv[0]] = kv[1]
+		entry.Fields[k] = v
 	}
 
 	return entry, nil
@@ -1100,12 +1103,12 @@ func (j *Journal) GetUniqueValues(field string) ([]string, error) {
 		}
 
 		msg := C.GoStringN((*C.char)(d), C.int(l))
-		kv := strings.SplitN(msg, "=", 2)
-		if len(kv) < 2 {
+		_, v, ok := strings.Cut(msg, "=")
+		if !ok {
 			return nil, errors.New("failed to parse field")
 		}
 
-		result = append(result, kv[1])
+		result = append(result, v)
 	}
 
 	return result, nil
