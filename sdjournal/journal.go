@@ -29,6 +29,34 @@ package sdjournal
 // #include <stdlib.h>
 // #include <syslog.h>
 //
+// struct my_gostring {
+//   char stack[64];
+//   char *heap;
+// };
+//
+// static inline char*
+// my_gostring_make(struct my_gostring *ms, _GoString_ s)
+// {
+//   char *ret;
+//   size_t n = _GoStringLen(s);
+//   if (n < sizeof(ms->stack)) {
+//     ms->heap = NULL;
+//     ret = ms->stack;
+//     memcpy(ret, _GoStringPtr(s), n);
+//     ret[n] = 0;
+//   } else {
+//     ret = strndup(_GoStringPtr(s), n);
+//     ms->heap = ret;
+//   }
+//   return ret;
+// }
+//
+// static inline void
+// my_gostring_clear(struct my_gostring *ms)
+// {
+//   free(ms->heap);
+// }
+//
 // int
 // my_sd_journal_open(void *f, sd_journal **ret, int flags)
 // {
@@ -75,12 +103,16 @@ package sdjournal
 // }
 //
 // int
-// my_sd_journal_add_match(void *f, sd_journal *j, const void *data, size_t size)
+// my_sd_journal_add_match(void *f, sd_journal *j, _GoString_ match)
 // {
+//   int r;
+//   struct my_gostring ms;
 //   int (*sd_journal_add_match)(sd_journal *, const void *, size_t);
 //
 //   sd_journal_add_match = f;
-//   return sd_journal_add_match(j, data, size);
+//   r = sd_journal_add_match(j, my_gostring_make(&ms, match), _GoStringLen(match));
+//   my_gostring_clear(&ms);
+//   return r;
 // }
 //
 // int
@@ -147,12 +179,16 @@ package sdjournal
 // }
 //
 // int
-// my_sd_journal_get_data(void *f, sd_journal *j, const char *field, const void **data, size_t *length)
+// my_sd_journal_get_data(void *f, sd_journal *j, _GoString_ field, const void **data, size_t *length)
 // {
+//   int r;
+//   struct my_gostring ms;
 //   int (*sd_journal_get_data)(sd_journal *, const char *, const void **, size_t *);
 //
 //   sd_journal_get_data = f;
-//   return sd_journal_get_data(j, field, data, length);
+//   r = sd_journal_get_data(j, my_gostring_make(&ms, field), data, length);
+//   my_gostring_clear(&ms);
+//   return r;
 // }
 //
 // int
@@ -174,12 +210,16 @@ package sdjournal
 // }
 //
 // int
-// my_sd_journal_test_cursor(void *f, sd_journal *j, const char *cursor)
+// my_sd_journal_test_cursor(void *f, sd_journal *j, _GoString_ cursor)
 // {
+//   int r;
+//   struct my_gostring ms;
 //   int (*sd_journal_test_cursor)(sd_journal *, const char *);
 //
 //   sd_journal_test_cursor = f;
-//   return sd_journal_test_cursor(j, cursor);
+//   r = sd_journal_test_cursor(j, my_gostring_make(&ms, cursor));
+//   my_gostring_clear(&ms);
+//   return r;
 // }
 //
 // int
@@ -218,14 +258,17 @@ package sdjournal
 //   return sd_journal_seek_tail(j);
 // }
 //
-//
 // int
-// my_sd_journal_seek_cursor(void *f, sd_journal *j, const char *cursor)
+// my_sd_journal_seek_cursor(void *f, sd_journal *j, _GoString_ cursor)
 // {
+//   int r;
+//   struct my_gostring ms;
 //   int (*sd_journal_seek_cursor)(sd_journal *, const char *);
 //
 //   sd_journal_seek_cursor = f;
-//   return sd_journal_seek_cursor(j, cursor);
+//   r = sd_journal_seek_cursor(j, my_gostring_make(&ms, cursor));
+//   my_gostring_clear(&ms);
+//   return r;
 // }
 //
 // int
@@ -265,12 +308,16 @@ package sdjournal
 // }
 //
 // int
-// my_sd_journal_query_unique(void *f, sd_journal *j, const char *field)
+// my_sd_journal_query_unique(void *f, sd_journal *j, _GoString_ field)
 // {
 //   int(*sd_journal_query_unique)(sd_journal *, const char *);
+//   struct my_gostring ms;
+//   char *tmp = my_gostring_make(&ms, field);
 //
 //   sd_journal_query_unique = f;
-//   return sd_journal_query_unique(j, field);
+//   int r = sd_journal_query_unique(j, tmp);
+//   my_gostring_clear(&ms);
+//   return r;
 // }
 //
 // int
@@ -505,11 +552,8 @@ func (j *Journal) AddMatch(match string) error {
 		return err
 	}
 
-	m := C.CString(match)
-	defer C.free(unsafe.Pointer(m))
-
 	j.mu.Lock()
-	r := C.my_sd_journal_add_match(sd_journal_add_match, j.cjournal, unsafe.Pointer(m), C.size_t(len(match)))
+	r := C.my_sd_journal_add_match(sd_journal_add_match, j.cjournal, match)
 	j.mu.Unlock()
 
 	if r < 0 {
@@ -658,13 +702,10 @@ func (j *Journal) getData(field string) (*ptrsz, error) {
 		return nil, err
 	}
 
-	f := C.CString(field)
-	defer C.free(unsafe.Pointer(f))
-
 	ps := ptrszPool.Get().(*ptrsz)
 
 	j.mu.Lock()
-	r := C.my_sd_journal_get_data(sd_journal_get_data, j.cjournal, f, &ps.d, &ps.l)
+	r := C.my_sd_journal_get_data(sd_journal_get_data, j.cjournal, field, &ps.d, &ps.l)
 	j.mu.Unlock()
 
 	if r < 0 {
@@ -927,11 +968,8 @@ func (j *Journal) TestCursor(cursor string) error {
 		return err
 	}
 
-	c := C.CString(cursor)
-	defer C.free(unsafe.Pointer(c))
-
 	j.mu.Lock()
-	r := C.my_sd_journal_test_cursor(sd_journal_test_cursor, j.cjournal, c)
+	r := C.my_sd_journal_test_cursor(sd_journal_test_cursor, j.cjournal, cursor)
 	j.mu.Unlock()
 
 	if r < 0 {
@@ -1012,11 +1050,8 @@ func (j *Journal) SeekCursor(cursor string) error {
 		return err
 	}
 
-	c := C.CString(cursor)
-	defer C.free(unsafe.Pointer(c))
-
 	j.mu.Lock()
-	r := C.my_sd_journal_seek_cursor(sd_journal_seek_cursor, j.cjournal, c)
+	r := C.my_sd_journal_seek_cursor(sd_journal_seek_cursor, j.cjournal, cursor)
 	j.mu.Unlock()
 
 	if r < 0 {
@@ -1098,10 +1133,7 @@ func (j *Journal) GetUniqueValues(field string) ([]string, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	f := C.CString(field)
-	defer C.free(unsafe.Pointer(f))
-
-	r := C.my_sd_journal_query_unique(sd_journal_query_unique, j.cjournal, f)
+	r := C.my_sd_journal_query_unique(sd_journal_query_unique, j.cjournal, field)
 
 	if r < 0 {
 		return nil, fmt.Errorf("failed to query journal: %w", syscall.Errno(-r))
