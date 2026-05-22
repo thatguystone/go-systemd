@@ -641,39 +641,52 @@ func (j *Journal) PreviousSkip(skip uint64) (uint64, error) {
 	return uint64(r), nil
 }
 
-func (j *Journal) getData(field string) (unsafe.Pointer, C.int, error) {
+type ptrsz struct {
+	d unsafe.Pointer
+	l C.size_t
+}
+
+var ptrszPool = sync.Pool{
+	New: func() any {
+		return new(ptrsz)
+	},
+}
+
+func (j *Journal) getData(field string) (*ptrsz, error) {
 	sd_journal_get_data, err := getFunction("sd_journal_get_data")
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	f := C.CString(field)
 	defer C.free(unsafe.Pointer(f))
 
-	var d unsafe.Pointer
-	var l C.size_t
+	ps := ptrszPool.Get().(*ptrsz)
 
 	j.mu.Lock()
-	r := C.my_sd_journal_get_data(sd_journal_get_data, j.cjournal, f, &d, &l)
+	r := C.my_sd_journal_get_data(sd_journal_get_data, j.cjournal, f, &ps.d, &ps.l)
 	j.mu.Unlock()
 
 	if r < 0 {
-		return nil, 0, fmt.Errorf("failed to read message: %w", syscall.Errno(-r))
+		ptrszPool.Put(ps)
+		return nil, fmt.Errorf("failed to read message: %w", syscall.Errno(-r))
 	}
 
-	return d, C.int(l), nil
+	return ps, nil
 }
 
 // GetData gets the data object associated with a specific field from the
 // the journal entry referenced by the last completed Next/Previous function
 // call. To call GetData, you must have first called one of these functions.
 func (j *Journal) GetData(field string) (string, error) {
-	d, l, err := j.getData(field)
+	ps, err := j.getData(field)
 	if err != nil {
 		return "", err
 	}
 
-	return C.GoStringN((*C.char)(d), l), nil
+	s := C.GoStringN((*C.char)(ps.d), C.int(ps.l))
+	ptrszPool.Put(ps)
+	return s, nil
 }
 
 // GetDataValue gets the data object associated with a specific field from the
@@ -694,12 +707,14 @@ func (j *Journal) GetDataValue(field string) (string, error) {
 // journal entry referenced by the last completed Next/Previous function call.
 // To call GetDataBytes, you must first have called one of these functions.
 func (j *Journal) GetDataBytes(field string) ([]byte, error) {
-	d, l, err := j.getData(field)
+	ps, err := j.getData(field)
 	if err != nil {
 		return nil, err
 	}
 
-	return C.GoBytes(d, l), nil
+	b := C.GoBytes(ps.d, C.int(ps.l))
+	ptrszPool.Put(ps)
+	return b, nil
 }
 
 // GetDataValueBytes gets the data object associated with a specific field from the
@@ -746,6 +761,9 @@ func (j *Journal) GetEntry() (*JournalEntry, error) {
 		return nil, err
 	}
 
+	ps := ptrszPool.Get().(*ptrsz)
+	defer ptrszPool.Put(ps)
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -782,11 +800,9 @@ func (j *Journal) GetEntry() (*JournalEntry, error) {
 	entry.Cursor = C.GoString(c)
 
 	// Implements the JOURNAL_FOREACH_DATA_RETVAL macro from journal-internal.h
-	var d unsafe.Pointer
-	var l C.size_t
 	C.my_sd_journal_restart_data(sd_journal_restart_data, j.cjournal)
 	for {
-		r = C.my_sd_journal_enumerate_data(sd_journal_enumerate_data, j.cjournal, &d, &l)
+		r = C.my_sd_journal_enumerate_data(sd_journal_enumerate_data, j.cjournal, &ps.d, &ps.l)
 		if r == 0 {
 			break
 		}
@@ -795,7 +811,7 @@ func (j *Journal) GetEntry() (*JournalEntry, error) {
 			return nil, fmt.Errorf("failed to read message field: %w", syscall.Errno(-r))
 		}
 
-		msg := C.GoStringN((*C.char)(d), C.int(l))
+		msg := C.GoStringN((*C.char)(ps.d), C.int(ps.l))
 
 		k, v, ok := strings.Cut(msg, "=")
 		if !ok {
@@ -1076,6 +1092,9 @@ func (j *Journal) GetUniqueValues(field string) ([]string, error) {
 		return nil, err
 	}
 
+	ps := ptrszPool.Get().(*ptrsz)
+	defer ptrszPool.Put(ps)
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -1089,11 +1108,9 @@ func (j *Journal) GetUniqueValues(field string) ([]string, error) {
 	}
 
 	// Implements the SD_JOURNAL_FOREACH_UNIQUE macro from sd-journal.h
-	var d unsafe.Pointer
-	var l C.size_t
 	C.my_sd_journal_restart_unique(sd_journal_restart_unique, j.cjournal)
 	for {
-		r = C.my_sd_journal_enumerate_unique(sd_journal_enumerate_unique, j.cjournal, &d, &l)
+		r = C.my_sd_journal_enumerate_unique(sd_journal_enumerate_unique, j.cjournal, &ps.d, &ps.l)
 		if r == 0 {
 			break
 		}
@@ -1102,7 +1119,7 @@ func (j *Journal) GetUniqueValues(field string) ([]string, error) {
 			return nil, fmt.Errorf("failed to read message field: %w", syscall.Errno(-r))
 		}
 
-		msg := C.GoStringN((*C.char)(d), C.int(l))
+		msg := C.GoStringN((*C.char)(ps.d), C.int(ps.l))
 		_, v, ok := strings.Cut(msg, "=")
 		if !ok {
 			return nil, errors.New("failed to parse field")
